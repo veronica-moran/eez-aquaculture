@@ -1,0 +1,184 @@
+
+```{r}
+#| message: false
+#| warning: false
+library(sf) # vector handling
+library(terra) # raster handling
+library(tidyverse)
+library(tmap) # map making
+library(elevatr) # elevation data download
+library(tigris) # US Census boundary data
+library(viridisLite)
+```
+
+
+```{r}
+# Reading in rasters and shapefile
+
+annual_temp_08 <- rast(
+  "data/average_annual_sst_2008.tif"
+)
+
+annual_temp_09 <- rast(
+  "data/average_annual_sst_2009.tif"
+)
+
+annual_temp_10 <- rast(
+  "data/average_annual_sst_2010.tif"
+)
+
+annual_temp_11 <- rast(
+  "data/average_annual_sst_2011.tif"
+)
+
+annual_temp_12 <- rast(
+  "data/average_annual_sst_2012.tif"
+)
+
+
+depth <- rast(
+  "data/depth.tif"
+)
+
+regions <- st_read("data/wc_regions_clean.shp"
+)
+```
+
+
+```{r}
+# Stacking temperature rasters
+
+temp_stack <- c(annual_temp_08, annual_temp_09, annual_temp_10, annual_temp_11, annual_temp_12)
+```
+
+
+```{r}
+# check if coordinate reference systems match
+if (crs(depth) == crs(regions)) {
+  print("Coordinate reference systems MATCH")
+} else {
+  warning("NO MATCH")
+}
+```
+
+
+```{r}
+# Check if coordinate reference systems match
+if (crs(depth) == crs(temp_stack)) {
+  print("Coordinate reference systems match")
+} else {
+  warning("Updating coordinate reference system to match")
+  
+  # Transform raster to match depth CRS
+  temp_stack <- project(
+    temp_stack,
+    crs(depth)
+  )
+}
+```
+
+```{r}
+same.crs(depth, regions)
+```
+
+
+```{r}
+st_crs(depth) == st_crs(regions)
+```
+
+
+```{r}
+crs(temp_stack)
+```
+
+
+```{r}
+crs(temp_stack, describe = TRUE)$code
+```
+
+
+```{r}
+crs(temp_stack, describe = TRUE)
+```
+
+
+```{r}
+crs(regions, describe = TRUE)$code
+```
+
+```{r}
+crs(depth, describe = TRUE)$code
+```
+
+
+
+```{r}
+# Mean SST from 2008-2012
+mean_sst <- app(temp_stack, mean, na.rm = TRUE)
+```
+
+
+```{r}
+# Convert mean SST from Kelvin to Celsius
+mean_sst <- mean_sst - 273.15
+```
+
+
+```{r}
+# Crop depth to SST extent
+depth_crop <- crop(depth, mean_sst)
+```
+
+```{r}
+# Resample cropped depth to match SST
+depth_resampled <- resample(
+  depth_crop,
+  mean_sst,
+  method = "bilinear"
+)
+```
+
+```{r}
+res(depth)
+res(mean_sst)
+
+ext(depth)
+ext(mean_sst)
+
+crs(depth) == crs(mean_sst)
+```
+
+```{r}
+# Check if depth and SST can be stacked
+depth_sst <- c(depth_resampled, mean_sst)
+```
+
+```{r}
+# Reclassifying SST for oyster suitability
+sst_rcl <- matrix(
+  c(
+    -Inf, 11, 0,
+    11, 30, 1,
+    30, Inf, 0
+  ),
+  ncol = 3,
+  byrow = TRUE
+)
+
+sst_suitable <- classify(mean_sst, rcl = sst_rcl)
+```
+
+```{r}
+# Reclassifying depth for oyster suitability
+depth_rcl <- matrix(
+  c(
+    -Inf, -70, 0,
+    -70, 0, 1,
+    0, Inf, 0
+  ),
+  ncol = 3,
+  byrow = TRUE
+)
+
+depth_suitable <- classify(depth_resampled, rcl = depth_rcl)
+```
