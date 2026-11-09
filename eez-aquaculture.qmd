@@ -1,18 +1,39 @@
+---
+title: "EDS 223: Homework 3"
+subtitle: "Prioritizing Potential Aquaculture"
+author: "Veronica Moran"
+date: November 8, 2026
+format: typst
+execute:
+  echo: true
+  message: false
+  results: hide
+---
+
+
+
+
 
 ```{r}
-#| message: false
-#| warning: false
+#| include: false
 library(sf) # vector handling
 library(terra) # raster handling
 library(tidyverse)
 library(tmap) # map making
-library(elevatr) # elevation data download
-library(tigris) # US Census boundary data
-library(viridisLite)
+library(gt)
+```
+
+
+
+```{r}
+#| include: false
+# Creating color palette
+region_colors <- c("#f6eff7", "#bdc9e1", "#67a9cf", "#1c9099", "#016c59")
 ```
 
 
 ```{r}
+#| output: false
 # Reading in rasters and shapefile
 
 annual_temp_08 <- rast(
@@ -53,18 +74,25 @@ temp_stack <- c(annual_temp_08, annual_temp_09, annual_temp_10, annual_temp_11, 
 
 
 ```{r}
-# check if coordinate reference systems match
-if (crs(depth) == crs(regions)) {
-  print("Coordinate reference systems MATCH")
+# Checking if coordinate reference systems match
+if (st_crs(regions) == st_crs(depth)) {
+  print("Coordinate reference systems match")
 } else {
-  warning("NO MATCH")
+  warning("Updating coordinate reference system to match")
+
+   # Transform EEZ regions (vector) to match depth CRS,
+  regions <- st_transform(
+    regions,
+    crs(depth)
+  )
+
 }
 ```
 
 
 ```{r}
 # Check if coordinate reference systems match
-if (crs(depth) == crs(temp_stack)) {
+if (crs(temp_stack) == crs(depth)) {
   print("Coordinate reference systems match")
 } else {
   warning("Updating coordinate reference system to match")
@@ -78,38 +106,12 @@ if (crs(depth) == crs(temp_stack)) {
 ```
 
 ```{r}
-same.crs(depth, regions)
-```
-
-
-```{r}
-st_crs(depth) == st_crs(regions)
-```
-
-
-```{r}
-crs(temp_stack)
-```
-
-
-```{r}
-crs(temp_stack, describe = TRUE)$code
-```
-
-
-```{r}
-crs(temp_stack, describe = TRUE)
-```
-
-
-```{r}
 crs(regions, describe = TRUE)$code
 ```
 
 ```{r}
 crs(depth, describe = TRUE)$code
 ```
-
 
 
 ```{r}
@@ -139,10 +141,10 @@ depth_resampled <- resample(
 ```
 
 ```{r}
-res(depth)
+res(depth_resampled)
 res(mean_sst)
 
-ext(depth)
+ext(depth_resampled)
 ext(mean_sst)
 
 crs(depth) == crs(mean_sst)
@@ -165,7 +167,7 @@ sst_rcl <- matrix(
   byrow = TRUE
 )
 
-sst_suitable <- classify(mean_sst, rcl = sst_rcl)
+sst_stbl <- classify(mean_sst, rcl = sst_rcl)
 ```
 
 ```{r}
@@ -180,5 +182,150 @@ depth_rcl <- matrix(
   byrow = TRUE
 )
 
-depth_suitable <- classify(depth_resampled, rcl = depth_rcl)
+depth_stbl<- classify(depth_resampled, rcl = depth_rcl)
+
+```
+
+```{r}
+oyster_stbl <- lapp(c(sst_stbl, depth_stbl), fun=function(sst, depth)sst * depth)
+
+names(oyster_stbl) <- "suitability"
+
+oyster_stbl[oyster_stbl < 1] <- NA
+
+```
+
+
+```{r}
+#| fig-height: 7
+#| fig-width: 6
+#| fig-align: center
+#| warning: false
+tm_basemap("Esri.NatGeoWorldMap", zoom = 5, alpha = 0.55) +
+tm_shape(oyster_stbl) +
+  tm_raster(
+    col.legend = tm_legend(title = "Suitable Habitat", 
+    position = tm_pos_in("left", "bottom"),
+    text.size = 0.6,
+    title.size = 0.7),
+    col.scale = tm_scale_categorical(values = "#dd1c77",
+    labels = "11–30 °C,  0–70 m deep")
+  ) + 
+tm_shape(regions) +
+  tm_borders(lwd = .75)  +
+ tm_compass(position = c("left", "top"), size = 1.5) +
+  tm_scalebar(position = c("left", "bottom"), width = 13) +
+tm_title(
+  "Suitable Oyster Habitat",
+  position = tm_pos_out(
+    "center",
+    "top",
+    pos.h = "center"
+  )
+) +
+tm_layout(inner.margins = c(0.08, 0.10, 0.02, 0.02))
+```
+
+```{r}
+cell_area <- cellSize(oyster_stbl) / 1e6
+```
+
+
+```{r}
+# summarize cell size variation across the extent
+global(cell_area, fun = c("mean", "min", "max"))
+```
+
+```{r}
+region_rast <- terra::rasterize(regions, oyster_stbl, field = "rgn_id")
+```
+
+```{r}
+# Mask cell sizes to EEZ regions
+eez_cell_area<- mask(cell_area, regions)
+
+# Verifying suitability, cell-area and EEZ rasters align
+oyster_eez <- c(region_rast, oyster_stbl, eez_cell_area)
+```
+
+
+```{r}
+area_stbl <- oyster_stbl * eez_cell_area
+```
+
+```{r}
+total_suitable_area <- zonal(
+  area_stbl,
+  region_rast,
+  fun = "sum",
+  na.rm = TRUE)|>
+  rename(suitable_area_km2 = suitability)
+
+total_suitable_area
+```
+
+
+```{r}
+oyster_stbla_summ <- total_suitable_area|>
+  left_join(
+    regions |>
+      st_drop_geometry() |>
+      select(rgn_id, rgn),
+    by = "rgn_id"
+  ) |> 
+    select(rgn, suitable_area_km2) |> 
+    arrange(desc(suitable_area_km2)) |>
+    gt() |> 
+  tab_header(title = md("Oyster Total Suitable Area")) |>
+  cols_label(
+    rgn = "Region",
+    suitable_area_km2 = md("Total Suitable Area (km^2^)")
+  )  |>
+  fmt_number(
+    columns = suitable_area_km2,
+    decimals = 2
+  )
+
+oyster_stbla_summ
+
+```
+
+
+```{r}
+regions_area <- regions |>
+  left_join(
+    total_suitable_area,
+    by = "rgn_id"
+  )
+```
+
+```{r}
+#| fig-height: 7
+#| fig-width: 6
+#| fig-align: center
+tm_basemap("Esri.NatGeoWorldMap", zoom = 5, alpha = 0.55) +
+tm_shape(regions_area) +
+tm_polygons(
+    fill = "suitable_area_km2",
+    fill.scale = tm_scale_continuous(
+      values = region_colors
+    ),
+    fill.legend = tm_legend(
+      title = "Suitable Area (km²)",
+      position = tm_pos_out("right", "center"),
+    col = "black",
+    lwd = 1
+  ) 
+)+ 
+ tm_compass(position = c("left", "top"), size = 1.5) +
+  tm_scalebar(position = c("left", "bottom"), width = 9) +
+tm_title(
+  "Oyster Suitable Area by EEZ Region",
+  position = tm_pos_out(
+    "center",
+    "top",
+    pos.h = "center"
+  ), size = 1.2
+) +
+tm_layout(inner.margins = c(0.08, 0.10, 0.02, 0.02),component.autoscale = FALSE)
 ```
